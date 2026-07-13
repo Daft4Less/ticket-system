@@ -1,0 +1,37 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: reservas
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: reservas
+  template:
+    metadata:
+      labels:
+        app: reservas
+    spec:
+      containers:
+        - name: reservas
+          image: danielaag5/reservas:v1
+          ports:
+            - containerPort: 8000
+          env:
+            - name: INVENTARIO_URL
+              value: "http://inventario:8000"
+            - name: PAGOS_URL
+              value: "http://pagos-stub:8000"
+            - name: NOTIFICACIONES_URL
+              value: "http://notificaciones-stub:8000"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: reservas
+spec:
+  selector:
+    app: reservas
+  ports:
+    - port: 8000
+      targetPort: 8000

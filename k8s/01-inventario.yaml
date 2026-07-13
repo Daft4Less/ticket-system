@@ -1,0 +1,43 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: inventario
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: inventario
+  template:
+    metadata:
+      labels:
+        app: inventario
+    spec:
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchExpressions:
+                  - key: app
+                    operator: In
+                    values:
+                      - inventario
+              topologyKey: "kubernetes.io/hostname"
+      containers:
+        - name: inventario
+          image: danielaag5/inventario:v1
+          ports:
+            - containerPort: 8000
+          env:
+            - name: DATABASE_URL
+              value: "postgresql://ticketuser:ticketpass@postgres:5432/ticketsdb"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: inventario
+spec:
+  selector:
+    app: inventario
+  ports:
+    - port: 8000
+      targetPort: 8000
