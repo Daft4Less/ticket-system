@@ -14,7 +14,7 @@ spec:
     spec:
       containers:
         - name: reservas
-          image: danielaag5/reservas:v2
+          image: danielaag5/reservas:v5
           ports:
             - containerPort: 8000
           env:
