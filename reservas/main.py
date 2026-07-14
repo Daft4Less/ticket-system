@@ -13,6 +13,7 @@ NOTIFICACIONES_URL = os.getenv("NOTIFICACIONES_URL", "http://notificaciones-stub
 
 TIMEOUT = httpx.Timeout(10.0, connect=5.0)
 PAGOS_TIMEOUT = httpx.Timeout(3.0, connect=2.0)
+NOTIFICACIONES_TIMEOUT = httpx.Timeout(3.0, connect=2.0)
 
 
 class InventarioUnavailableError(Exception):
@@ -24,8 +25,6 @@ class PagosUnavailableError(Exception):
     pass
 
 
-# --- Patrón de resiliencia: Circuit Breaker (aiobreaker, con soporte nativo de asyncio) ---
-# Corresponde al fallo "Pasarela Lenta" (Parte II, fallo #2).
 pagos_breaker = CircuitBreaker(fail_max=3, timeout_duration=timedelta(seconds=30))
 
 
@@ -75,6 +74,38 @@ async def llamar_pagos(event_id: str, amount: float) -> dict:
         return resp.json()
 
 
+# --- Patrón de resiliencia: Fallback ---
+# Corresponde al fallo "Correo Perdido" (Parte II, fallo #5).
+# Justificación: el email de confirmación es un paso NO crítico - el usuario ya pagó
+# y tiene su asiento reservado. En vez de fallar toda la compra si Notificaciones está
+# caído, se aplica un fallback: se registra el fallo y se continúa devolviendo una
+# compra exitosa, dejando constancia de que la notificación deberá reintentarse
+# por otro medio (ej. un job asíncrono, no implementado en esta práctica).
+async def enviar_notificacion_con_fallback(event_id: str, email: str) -> dict:
+    try:
+        async with httpx.AsyncClient(timeout=NOTIFICACIONES_TIMEOUT) as client:
+            resp = await client.post(
+                f"{NOTIFICACIONES_URL}/notifications/send-confirmation",
+                params={"event_id": event_id, "email": email}
+            )
+            if resp.status_code == 200:
+                return {"status": "sent", **resp.json()}
+
+            # Fallback: no se pudo enviar, pero no se propaga como error fatal
+            return {
+                "status": "failed_fallback",
+                "detail": resp.json().get("detail", "Fallo desconocido en notificaciones"),
+                "note": "La compra se completó igual. El email se debe reintentar por otro medio."
+            }
+    except httpx.RequestError as e:
+        # Fallback también ante errores de conexión (servicio caído por completo)
+        return {
+            "status": "failed_fallback",
+            "detail": str(e),
+            "note": "La compra se completó igual. El email se debe reintentar por otro medio."
+        }
+
+
 @app.post("/reservations/purchase")
 async def purchase(event_id: str, email: str = "cliente@example.com", amount: float = 10.0):
     result = {"event_id": event_id, "steps": {}}
@@ -94,18 +125,8 @@ async def purchase(event_id: str, email: str = "cliente@example.com", amount: fl
     except PagosUnavailableError as e:
         raise HTTPException(status_code=503, detail=str(e))
 
-    async with httpx.AsyncClient(timeout=TIMEOUT) as client:
-        try:
-            resp = await client.post(
-                f"{NOTIFICACIONES_URL}/notifications/send-confirmation",
-                params={"event_id": event_id, "email": email}
-            )
-            if resp.status_code == 200:
-                result["steps"]["notificacion"] = resp.json()
-            else:
-                result["steps"]["notificacion"] = {"status": "failed", "detail": resp.json().get("detail")}
-        except httpx.RequestError as e:
-            result["steps"]["notificacion"] = {"status": "failed", "detail": str(e)}
+    # Notificación con Fallback: nunca hace fallar la compra completa
+    result["steps"]["notificacion"] = await enviar_notificacion_con_fallback(event_id, email)
 
     result["purchase_status"] = "completed"
     return result
